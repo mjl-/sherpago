@@ -1,2 +1,4 @@
-bitbucket.org/mjl/sherpa v0.5.2 h1:L0sDKT0EjQH8AixSVxwys72qyKshwKMdO/lXPTSHtmg=
-bitbucket.org/mjl/sherpa v0.5.2/go.mod h1:dW2SWy7s4cdzeI+eEDS2gK58KAjYGMGaDsr5yMOhw38=
+github.com/mjl-/sherpa v0.6.0 h1:lNu86b3htqJVhftOOxAxJwfIZ5Xuo6lz1ifiZZ096Do=
+github.com/mjl-/sherpa v0.6.0/go.mod h1:dSpAOdgpwdqQZ72O4n3EHo/tR68eKyan8tYYraUMPNc=
+github.com/mjl-/sherpadoc v0.0.0-20190505200843-c0a7f43f5f1d h1:Y7GWrib5DOJYNlJkP4Dmq/nlR1hRDya86Xa2rg8N/vI=
+github.com/mjl-/sherpadoc v0.0.0-20190505200843-c0a7f43f5f1d/go.mod h1:5khTKxoKKNXcB8bkVUO6GlzC7PFtMmkHq578lPbmnok=

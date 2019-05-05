@@ -1,3 +1,8 @@
 module github.com/mjl-/sherpago
 
-require bitbucket.org/mjl/sherpa v0.5.2
+go 1.12
+
+require (
+	github.com/mjl-/sherpa v0.6.0
+	github.com/mjl-/sherpadoc v0.0.0-20190505200843-c0a7f43f5f1d
+)

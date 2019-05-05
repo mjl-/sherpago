@@ -1,9 +1,10 @@
 build:
-	go build
+	go build ./...
+	go vet ./...
 
 test:
 	golint
-	go test -cover
+	go test -cover ./...
 
 coverage:
 	go test -coverprofile=coverage.out -test.outputdir . --

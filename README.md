@@ -19,8 +19,10 @@ MIT-licensed, contains 3-clause BSD licensed code from github.com/golang/lint.
 
 # TODO
 
-- write tests
+- check if identifiers (type names, function names) are keywords in go. if so, rename them so they are not, and don't clash with existing names.
+
+- write tests, both for library and generated code
+
+- think about adding helper for dealing with errors. eg whether it is a sherpa, server or user error.
 - either return error message or use another name when we get duplicate identifiers (type or field or function names) after turning a name from sherpadoc into a proper Go identifier. currently we generate Go code that won't compile.
 - reformat comments, turning markdown from sherpadoc into more readable Go comments. e.g. turn bullet lists into indented wrapped text.
-- add top-level documentation. something generic for the object named apiName, and the actual top-level sherpadoc text as package-level docs.
-- sync with sherpats, code was shared between them.

@@ -1,23 +1,21 @@
 package sherpago
 
 import (
-	"bytes"
+	"bufio"
 	"encoding/json"
-	"flag"
 	"fmt"
-	"log"
-	"net/url"
-	"os"
+	"io"
+	"strconv"
 	"strings"
 
-	"bitbucket.org/mjl/sherpa"
+	"github.com/mjl-/sherpadoc"
 )
 
 type sherpaType interface {
 	GoType() string
 }
 
-// baseType can be one of: "any", "bool", "int", "float", "string".
+// baseType, one of: "any", "bool", "int16", etc.
 type baseType struct {
 	Name string
 }
@@ -46,10 +44,12 @@ func (t baseType) GoType() string {
 	switch t.Name {
 	case "any":
 		return "interface{}"
-	case "int":
+	case "timestamp":
+		return "time.Time"
+	case "int64s":
 		return "int64"
-	case "float":
-		return "float64"
+	case "uint64s":
+		return "uint64"
 	default:
 		return t.Name
 	}
@@ -71,58 +71,41 @@ func (t identType) GoType() string {
 	return t.Name
 }
 
-func check(err error, action string) {
+type genError error
+
+// Generate reads sherpadoc from in and writes a Go file containing a client
+// package to out.  It requires two parameters: the package name to use and the
+// baseURL for the API.
+func Generate(in io.Reader, out io.Writer, packageName, baseURL string) (retErr error) {
+	defer func() {
+		e := recover()
+		if e == nil {
+			return
+		}
+		g, ok := e.(genError)
+		if !ok {
+			panic(e)
+		}
+		retErr = error(g)
+	}()
+
+	var doc sherpadoc.Section
+	err := json.NewDecoder(in).Decode(&doc)
 	if err != nil {
-		log.Fatalf("%s: %s\n", action, err)
+		panic(genError(fmt.Errorf("parsing sherpadoc json: %s", err)))
 	}
-}
-
-// Main reads sherpadoc from stdin and writes a Go package to
-// stdout.  It requires two parameters: the API name as exportable Go identifier, and a baseURL for the API.
-// It is a separate command so it can easily be vendored into a repository with go modules.
-func Main() {
-	log.SetFlags(0)
-	log.SetPrefix("sherpago: ")
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "%s API-name baseURL\n", os.Args[0])
-		flag.PrintDefaults()
-		os.Exit(2)
-	}
-	flag.Parse()
-	args := flag.Args()
-	if len(args) != 2 {
-		log.Print("bad parameters")
-		flag.Usage()
-		os.Exit(2)
-	}
-	apiName := args[0]
-	baseURL := args[1]
-
-	if apiName == "" || strings.ToUpper(apiName[:1]) != apiName[:1] {
-		log.Fatalf("bad API name %q: must be an exported name in Go\n", apiName)
-	}
-	_, err := url.Parse(baseURL)
-	check(err, "parsing base URL")
-	if !strings.HasSuffix(baseURL, "/") {
-		log.Fatalf("bad baseURL %q: must end with a slash", baseURL)
-	}
-
-	var doc sherpa.Doc
-	err = json.NewDecoder(os.Stdin).Decode(&doc)
-	check(err, "parsing sherpadoc json from stdin")
 
 	const sherpadocVersion = 1
-	if doc.Version != sherpadocVersion {
-		log.Fatalf("unexpected sherpadoc version %d, expected %d\n", doc.Version, sherpadocVersion)
+	if doc.SherpadocVersion != sherpadocVersion {
+		panic(genError(fmt.Errorf("unexpected sherpadoc version %d, expected %d", doc.SherpadocVersion, sherpadocVersion)))
 	}
 
-	// Use bytes.Buffer, writes won't fail. We do one big write at the end. Output won't quickly become too big to fit in memory.
-	out := &bytes.Buffer{}
+	// Validate contents.
+	err = sherpadoc.Check(&doc)
+	if err != nil {
+		panic(genError(err))
+	}
 
-	// Check all referenced types exist.
-	checkTypes(&doc)
-
-	// TODO: check that this name isn't already used as a type, field, function name in the same context.
 	goExportedName := func(name string) string {
 		return lintName(strings.ToUpper(name[:1]) + name[1:])
 	}
@@ -131,61 +114,114 @@ func Main() {
 		return strings.ToLower(name[:1]) + name[1:]
 	}
 
-	fmt.Fprintf(out, `package client
+	bout := bufio.NewWriter(out)
+	xprintf := func(format string, args ...interface{}) {
+		_, err := fmt.Fprintf(out, format, args...)
+		if err != nil {
+			panic(genError(err))
+		}
+	}
+
+	xprintMultiline := func(indent, docs string, always bool) []string {
+		lines := docLines(docs)
+		if len(lines) == 1 && !always {
+			return lines
+		}
+		for _, line := range lines {
+			xprintf("%s// %s\n", indent, line)
+		}
+		return lines
+	}
+
+	xprintSingleline := func(lines []string) {
+		if len(lines) != 1 {
+			return
+		}
+		xprintf("  // %s", lines[0])
+	}
+
+	var generateSectionDocs func(sec *sherpadoc.Section, depth int)
+	generateSectionDocs = func(sec *sherpadoc.Section, depth int) {
+		xprintMultiline("", sec.Docs, true)
+		depth++
+		for _, subsec := range sec.Sections {
+			xprintf("//\n// %s %s\n//\n", strings.Repeat("#", depth), subsec.Name)
+			generateSectionDocs(subsec, depth)
+		}
+	}
+	generateSectionDocs(&doc, 0)
+
+	xprintf(`package %s
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
-	"bitbucket.org/mjl/sherpa"
+	"github.com/mjl-/sherpa"
 )
 
-type %s struct {
+var _ time.Time // in case "timestamp" is used
+
+type Client struct {
 	BaseURL string
+	Client *http.Client
 }
 
-func New() *%s {
-	return &%s{
+func NewClient() *Client {
+	return &Client{
 		BaseURL: "%s",
+		Client: http.DefaultClient,
 	}
 }
 
-func (c *%s) call(functionName string, params []interface{}, result []interface{}) error {
-	req := map[string]interface{}{
+func (c *Client) call(ctx context.Context, functionName string, params []interface{}, result []interface{}) error {
+	sherpaReq := map[string]interface{}{
 		"params": params,
 	}
 	buf := &bytes.Buffer{}
-	err := json.NewEncoder(buf).Encode(req)
+	err := json.NewEncoder(buf).Encode(sherpaReq)
 	if err != nil {
-		return &sherpa.Error{Code: "sherpa:parameter encode error", Message: "could not encode request parameters: " + err.Error()}
+		return &sherpa.Error{Code: "sherpa:parameter encode error", Message: "encoding request parameters: " + err.Error()}
 	}
+
 	url := c.BaseURL + functionName
-	resp, err := http.Post(url, "application/json", buf)
+	req, err := http.NewRequest("POST", url, buf)
+	if err != nil {
+		return &sherpa.Error{Code: "sherpa:http", Message: "constructing request: " + err.Error()}
+	}
+	req = req.WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+
+	resp, err := c.Client.Do(req)
 	if err != nil {
 		return &sherpa.Error{Code: sherpa.SherpaHTTPError, Message: "sending POST request: " + err.Error()}
 	}
+	defer resp.Body.Close()
+
 	switch resp.StatusCode {
 	case 200:
-		defer resp.Body.Close()
 		var response struct {
 			Result json.RawMessage "json:\"result\""
 			Error  *sherpa.Error   "json:\"error\""
 		}
 		err = json.NewDecoder(resp.Body).Decode(&response)
 		if err != nil {
-			return &sherpa.Error{Code: sherpa.SherpaBadResponse, Message: "could not parse JSON response: " + err.Error()}
+			return &sherpa.Error{Code: sherpa.SherpaBadResponse, Message: "parsing response: " + err.Error()}
 		}
 		if response.Error != nil {
 			return response.Error
 		}
-		var r interface{}
+
+		var r interface{} = &result
 		if len(result) == 1 {
-			r = result[0]
+			r = &result[0]
 		}
 		err = json.Unmarshal(response.Result, r)
 		if err != nil {
-			return &sherpa.Error{Code: sherpa.SherpaBadResponse, Message: "could not unmarshal JSON response"}
+			return &sherpa.Error{Code: sherpa.SherpaBadResponse, Message: "parsing result: " + err.Error()}
 		}
 		return nil
 	case 404:
@@ -195,40 +231,79 @@ func (c *%s) call(functionName string, params []interface{}, result []interface{
 	}
 }
 
-`, apiName, apiName, apiName, baseURL, apiName)
+`, packageName, baseURL)
 
-	generateTypes := func(sec *sherpa.Doc) {
-		for _, t := range sec.Types {
-			for _, line := range commentLines(t.Text) {
-				fmt.Fprintf(out, "// %s\n", line)
-			}
-			fmt.Fprintf(out, "type %s struct {\n", goExportedName(t.Name))
+	generateTypes := func(sec *sherpadoc.Section) {
+		for _, t := range sec.Structs {
+			xprintMultiline("", t.Docs, true)
+			xprintf("type %s struct {\n", goExportedName(t.Name))
 			for _, f := range t.Fields {
-				lines := commentLines(f.Text)
-				if len(lines) > 1 {
-					for _, line := range lines {
-						fmt.Fprintf(out, "\t// %s\n", line)
-					}
-				}
+				lines := xprintMultiline("\t", f.Docs, false)
 				what := fmt.Sprintf("field %s for type %s", f.Name, t.Name)
-				fmt.Fprintf(out, "\t%s %s `json:\"%s\"`", goExportedName(f.Name), goType(what, f.Type), f.Name)
-				if len(lines) == 1 {
-					fmt.Fprintf(out, "   // %s", lines[0])
+				jsonStr := ""
+				switch f.Typewords[len(f.Typewords)-1] {
+				case "int64s", "uint64s":
+					jsonStr = ",string"
 				}
-				fmt.Fprintln(out, "")
+				goFieldName := goExportedName(f.Name)
+				xprintf("\t%s %s", goFieldName, goType(what, f.Typewords))
+				if goFieldName != f.Name || jsonStr != "" {
+					xprintf(" `json:\"")
+					if goFieldName != f.Name {
+						xprintf("%s", f.Name)
+					}
+					xprintf("%s", jsonStr)
+					xprintf("\"`")
+				}
+				xprintSingleline(lines)
+				xprintf("\n")
 			}
-			fmt.Fprintf(out, "}\n\n")
+			xprintf("}\n\n")
+		}
+
+		for _, t := range sec.Ints {
+			xprintMultiline("", t.Docs, true)
+			typeName := goExportedName(t.Name)
+			xprintf("type %s int\n", typeName)
+			if len(t.Values) == 0 {
+				continue
+			}
+			xprintf("const (\n")
+			for _, v := range t.Values {
+				lines := xprintMultiline("\t", v.Docs, false)
+				xprintf("\t%s %s = %d", goExportedName(v.Name), typeName, v.Value)
+				xprintSingleline(lines)
+				xprintf("\n")
+			}
+			xprintf(")\n\n")
+		}
+
+		for _, t := range sec.Strings {
+			xprintMultiline("", t.Docs, true)
+			typeName := goExportedName(t.Name)
+			xprintf("type %s string\n", typeName)
+			if len(t.Values) == 0 {
+				continue
+			}
+			xprintf("const (\n")
+			for _, v := range t.Values {
+				lines := xprintMultiline("\t", v.Docs, false)
+				xprintf("\t%s %s = %s", goExportedName(v.Name), typeName, strconv.Quote(v.Value))
+				xprintSingleline(lines)
+				xprintf("\n")
+			}
+			xprintf(")\n\n")
 		}
 	}
 
-	generateFunctions := func(sec *sherpa.Doc) {
+	generateFunctions := func(sec *sherpadoc.Section) {
 		for _, fn := range sec.Functions {
 			whatParam := "pararameter for " + fn.Name
 			paramTypes := []string{}
 			paramNames := []string{}
 			params := []string{}
 			for _, p := range fn.Params {
-				paramType := goType(whatParam, p.Type)
+				paramType := goType(whatParam, p.Typewords)
 				paramName := goLocalName(p.Name)
 				paramTypes = append(paramTypes, paramType)
 				paramNames = append(paramNames, paramName)
@@ -239,8 +314,8 @@ func (c *%s) call(functionName string, params []interface{}, result []interface{
 			returnTypes := ""
 			returnNames := ""
 			returnRefNames := []string{}
-			for i, t := range fn.Return {
-				typ := goType(whatParam, t.Type)
+			for i, t := range fn.Returns {
+				typ := goType(whatParam, t.Typewords)
 				name := fmt.Sprintf("r%d", i)
 				returnVars += fmt.Sprintf("\t\t%s %s\n", name, typ)
 				returnTypes += typ + ", "
@@ -250,20 +325,18 @@ func (c *%s) call(functionName string, params []interface{}, result []interface{
 			if returnVars != "" {
 				returnVars = "\tvar (\n" + returnVars + "\t)\n"
 			}
-			for _, line := range commentLines(fn.Text) {
-				fmt.Fprintf(out, "// %s\n", line)
-			}
-			fmt.Fprintf(out, `func (c *%s) %s(%s) (%serror) {
-%s	err := c.call("%s", []interface{}{%s}, []interface{}{%s})
+			xprintMultiline("", fn.Docs, true)
+			xprintf(`func (c *Client) %s(ctx context.Context, %s) (%serror) {
+%s	err := c.call(ctx, "%s", []interface{}{%s}, []interface{}{%s})
 	return %serr
 }
 
-`, apiName, goExportedName(fn.Name), strings.Join(params, ", "), returnTypes, returnVars, fn.Name, strings.Join(paramNames, ", "), strings.Join(returnRefNames, ", "), returnNames)
+`, goExportedName(fn.Name), strings.Join(params, ", "), returnTypes, returnVars, fn.Name, strings.Join(paramNames, ", "), strings.Join(returnRefNames, ", "), returnNames)
 		}
 	}
 
-	var generateSection func(sec *sherpa.Doc)
-	generateSection = func(sec *sherpa.Doc) {
+	var generateSection func(sec *sherpadoc.Section)
+	generateSection = func(sec *sherpadoc.Section) {
 		generateTypes(sec)
 		generateFunctions(sec)
 		for _, subsec := range sec.Sections {
@@ -272,8 +345,11 @@ func (c *%s) call(functionName string, params []interface{}, result []interface{
 	}
 	generateSection(&doc)
 
-	_, err = os.Stdout.Write(out.Bytes())
-	check(err, "write to stdout")
+	err = bout.Flush()
+	if err != nil {
+		panic(genError(err))
+	}
+	return nil
 }
 
 func goType(what string, typeTokens []string) string {
@@ -284,14 +360,14 @@ func goType(what string, typeTokens []string) string {
 func parseType(what string, tokens []string) sherpaType {
 	checkOK := func(ok bool, v interface{}, msg string) {
 		if !ok {
-			log.Fatalf("invalid type for %s: %s, saw %q\n", what, msg, v)
+			panic(genError(fmt.Errorf("invalid type for %s: %s, saw %q", what, msg, v)))
 		}
 	}
 	checkOK(len(tokens) > 0, tokens, "need at least one element")
 	s := tokens[0]
 	tokens = tokens[1:]
 	switch s {
-	case "any", "bool", "int", "float", "string":
+	case "any", "bool", "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "int64s", "uint64s", "float32", "float64", "string", "timestamp":
 		if len(tokens) != 0 {
 			checkOK(false, tokens, "leftover tokens after base type")
 		}
@@ -310,7 +386,7 @@ func parseType(what string, tokens []string) sherpaType {
 	}
 }
 
-func commentLines(s string) []string {
+func docLines(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
