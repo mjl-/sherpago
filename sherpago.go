@@ -71,7 +71,7 @@ func (t identType) GoType() string {
 	return t.Name
 }
 
-type genError error
+type genError struct{ error }
 
 // Generate reads sherpadoc from in and writes a Go file containing a client
 // package to out.  It requires two parameters: the package name to use and the
@@ -92,18 +92,18 @@ func Generate(in io.Reader, out io.Writer, packageName, baseURL string) (retErr 
 	var doc sherpadoc.Section
 	err := json.NewDecoder(in).Decode(&doc)
 	if err != nil {
-		panic(genError(fmt.Errorf("parsing sherpadoc json: %s", err)))
+		panic(genError{fmt.Errorf("parsing sherpadoc json: %s", err)})
 	}
 
 	const sherpadocVersion = 1
 	if doc.SherpadocVersion != sherpadocVersion {
-		panic(genError(fmt.Errorf("unexpected sherpadoc version %d, expected %d", doc.SherpadocVersion, sherpadocVersion)))
+		panic(genError{fmt.Errorf("unexpected sherpadoc version %d, expected %d", doc.SherpadocVersion, sherpadocVersion)})
 	}
 
 	// Validate contents.
 	err = sherpadoc.Check(&doc)
 	if err != nil {
-		panic(genError(err))
+		panic(genError{err})
 	}
 
 	goExportedName := func(name string) string {
@@ -118,7 +118,7 @@ func Generate(in io.Reader, out io.Writer, packageName, baseURL string) (retErr 
 	xprintf := func(format string, args ...interface{}) {
 		_, err := fmt.Fprintf(out, format, args...)
 		if err != nil {
-			panic(genError(err))
+			panic(genError{err})
 		}
 	}
 
@@ -347,7 +347,7 @@ func (c *Client) call(ctx context.Context, functionName string, params []interfa
 
 	err = bout.Flush()
 	if err != nil {
-		panic(genError(err))
+		panic(genError{err})
 	}
 	return nil
 }
@@ -360,7 +360,7 @@ func goType(what string, typeTokens []string) string {
 func parseType(what string, tokens []string) sherpaType {
 	checkOK := func(ok bool, v interface{}, msg string) {
 		if !ok {
-			panic(genError(fmt.Errorf("invalid type for %s: %s, saw %q", what, msg, v)))
+			panic(genError{fmt.Errorf("invalid type for %s: %s, saw %q", what, msg, v)})
 		}
 	}
 	checkOK(len(tokens) > 0, tokens, "need at least one element")
