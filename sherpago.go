@@ -11,6 +11,35 @@ import (
 	"github.com/mjl-/sherpadoc"
 )
 
+// Keywords in Go.
+var keywords = map[string]struct{}{
+	"break":       {},
+	"default":     {},
+	"func":        {},
+	"interface":   {},
+	"select":      {},
+	"case":        {},
+	"defer":       {},
+	"go":          {},
+	"map":         {},
+	"struct":      {},
+	"chan":        {},
+	"else":        {},
+	"goto":        {},
+	"package":     {},
+	"switch":      {},
+	"const":       {},
+	"fallthrough": {},
+	"if":          {},
+	"range":       {},
+	"type":        {},
+	"continue":    {},
+	"for":         {},
+	"import":      {},
+	"return":      {},
+	"var":         {},
+}
+
 type sherpaType interface {
 	GoType() string
 }
@@ -110,8 +139,25 @@ func Generate(in io.Reader, out io.Writer, packageName, baseURL string) (retErr 
 		return lintName(strings.ToUpper(name[:1]) + name[1:])
 	}
 
+	// Local names could be Go keywords. If they are, make a unique non-reserved name.
+	localNames := map[string]string{}
 	goLocalName := func(name string) string {
-		return strings.ToLower(name[:1]) + name[1:]
+		r := strings.ToLower(name[:1]) + name[1:]
+		if _, ok := keywords[r]; !ok {
+			return r
+		}
+		nr := localNames[r]
+		if nr != "" {
+			return nr
+		}
+		for i := 0; ; i++ {
+			nr = fmt.Sprintf("%s%d", r, i)
+			if _, ok := localNames[nr]; ok {
+				continue
+			}
+			localNames[r] = nr
+			return nr
+		}
 	}
 
 	bout := bufio.NewWriter(out)
@@ -299,13 +345,11 @@ func (c *Client) call(ctx context.Context, functionName string, params []interfa
 	generateFunctions := func(sec *sherpadoc.Section) {
 		for _, fn := range sec.Functions {
 			whatParam := "pararameter for " + fn.Name
-			paramTypes := []string{}
 			paramNames := []string{}
 			params := []string{}
 			for _, p := range fn.Params {
 				paramType := goType(whatParam, p.Typewords)
 				paramName := goLocalName(p.Name)
-				paramTypes = append(paramTypes, paramType)
 				paramNames = append(paramNames, paramName)
 				params = append(params, fmt.Sprintf("%s %s", paramName, paramType))
 			}
